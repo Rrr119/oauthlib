@@ -5,6 +5,7 @@ OAuth 2.0
    :maxdepth: 2
 
    security
+   jarm
    clients/client
    server
    endpoints/endpoints

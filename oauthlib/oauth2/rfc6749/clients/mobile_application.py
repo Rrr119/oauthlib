@@ -6,7 +6,13 @@ oauthlib.oauth2.rfc6749
 This module is an implementation of various logic needed
 for consuming and providing OAuth 2.0 RFC6749.
 """
-from ..parameters import parse_implicit_response, prepare_grant_uri
+from .. import jarm
+from ..parameters import (
+    parse_expires, parse_implicit_response, prepare_grant_uri,
+    validate_token_parameters,
+)
+from ..tokens import OAuth2Token
+from ..utils import scope_to_list
 from .base import Client
 
 
@@ -95,7 +101,9 @@ class MobileApplicationClient(Client):
         return prepare_grant_uri(uri, self.client_id, self.response_type,
                                  redirect_uri=redirect_uri, state=state, scope=scope, **kwargs)
 
-    def parse_request_uri_response(self, uri, state=None, scope=None):
+    def parse_request_uri_response(self, uri, state=None, scope=None,
+                                   issuer=None, audience=None, key=None,
+                                   algorithms=None, leeway=None, now=None):
         """Parse the response URI fragment.
 
         If the resource owner grants the access request, the authorization
@@ -169,6 +177,38 @@ class MobileApplicationClient(Client):
         .. _`Section 3.3`: https://tools.ietf.org/html/rfc6749#section-3.3
         """
         scope = self.scope if scope is None else scope
-        self.token = parse_implicit_response(uri, state=state, scope=scope)
+        jarm_token = (
+            jarm.extract_jarm_response(uri)
+            if jarm.is_jarm_response(uri)
+            else None
+        )
+
+        if jarm_token is not None:
+            response = self.parse_jarm_response(
+                jarm_token,
+                issuer=issuer,
+                audience=audience,
+                key=key,
+                algorithms=algorithms,
+                leeway=leeway,
+                state=state,
+                now=now,
+            )
+            if 'scope' in response:
+                response['scope'] = scope_to_list(response['scope'])
+            expires_in, expires_at, _expires_at = parse_expires(response)
+            if expires_in:
+                response['expires_in'] = expires_in
+            elif 'expires_in' in response:
+                response.pop('expires_in')
+            if expires_at:
+                response['expires_at'] = expires_at
+            elif 'expires_at' in response:
+                response.pop('expires_at')
+            self.token = OAuth2Token(response, old_scope=scope)
+            validate_token_parameters(self.token)
+        else:
+            self.token = parse_implicit_response(
+                uri, state=state, scope=scope)
         self.populate_token_attributes(self.token)
         return self.token

@@ -240,6 +240,111 @@ class RequestValidator:
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
+    def get_jarm_response(self, response, request):
+        """Return a signed JARM authorization response JWT.
+
+        This method lets the authorization server take full control over the
+        JARM response.  It receives the authorization response parameters as a
+        dictionary and should return the compact JWS serialization.  Returning
+        ``None`` lets oauthlib build the standard ``iss``, ``aud``, ``iat`` and
+        ``exp`` claims and use ``finalize_jarm_response`` or the configured
+        signing key.
+
+        :param response: Authorization response parameters.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str or None
+
+        Method is used by:
+            - Authorization Code Grant
+            - Implicit Grant
+            - Hybrid Grant
+        """
+        return None
+
+    def finalize_jarm_response(self, response, request):
+        """Sign JARM claims prepared by oauthlib.
+
+        ``response`` contains the authorization response parameters plus the
+        required ``iss``, ``aud``, ``iat`` and ``exp`` claims.  Return a compact
+        JWS serialization, or ``None`` to use the built-in signer with
+        :meth:`get_jarm_signing_key`.
+
+        :param response: JARM claims to sign.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str or None
+
+        Method is used by:
+            - Authorization Code Grant
+            - Implicit Grant
+            - Hybrid Grant
+        """
+        return None
+
+    def sign_jarm_response(self, response, request):
+        """Sign JARM claims prepared by oauthlib.
+
+        This hook is an alternative to :meth:`finalize_jarm_response` and
+        receives the same claims.  Return a compact JWS serialization, or
+        ``None`` to use the built-in signer with
+        :meth:`get_jarm_signing_key`.
+
+        :param response: JARM claims to sign.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str or None
+        """
+        return None
+
+    def get_jarm_issuer(self, request):
+        """Return the issuer identifier used in JARM responses.
+
+        The default reads ``request.issuer`` if present.  Implement this method
+        when the issuer is stored elsewhere.
+
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str or None
+        """
+        return getattr(request, 'issuer', None)
+
+    def get_jarm_signing_key(self, client_id, request):
+        """Return the key used by oauthlib to sign JARM responses.
+
+        PyJWT accepts secrets and private key objects here.  Return ``None`` if
+        :meth:`get_jarm_response` or :meth:`finalize_jarm_response` performs
+        signing itself.
+
+        :param client_id: Unicode client identifier.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: object or None
+
+        Method is used by:
+            - Authorization Code Grant
+            - Implicit Grant
+            - Hybrid Grant
+        """
+        return None
+
+    def get_jarm_signing_alg(self, client_id, request):
+        """Return the JWS algorithm used to sign JARM responses.
+
+        The default is ``RS256``.
+
+        :param client_id: Unicode client identifier.
+        :param request: OAuthlib request.
+        :type request: oauthlib.common.Request
+        :rtype: str
+
+        Method is used by:
+            - Authorization Code Grant
+            - Implicit Grant
+            - Hybrid Grant
+        """
+        return 'RS256'
+
     def invalidate_authorization_code(self, client_id, code, request, *args, **kwargs):
         """Invalidate an authorization code after use.
 

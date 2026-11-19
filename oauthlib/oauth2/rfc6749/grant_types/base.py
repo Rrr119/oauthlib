@@ -3,11 +3,12 @@ oauthlib.oauth2.rfc6749.grant_types
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 """
 import functools
+import html
 import logging
 from itertools import chain
 
 from oauthlib.common import add_params_to_uri
-from oauthlib.oauth2.rfc6749 import errors, utils
+from oauthlib.oauth2.rfc6749 import errors, jarm, utils
 from oauthlib.uri_validate import is_absolute_uri
 
 from ..request_validator import RequestValidator
@@ -108,7 +109,15 @@ class GrantTypeBase:
     error_uri = None
     request_validator = None
     default_response_mode = 'fragment'
-    _response_modes = ('query', 'fragment')
+    _response_modes = (
+        'query',
+        'fragment',
+        jarm.QUERY_JWT,
+        jarm.FRAGMENT_JWT,
+        jarm.FORM_POST_JWT,
+        jarm.JWT,
+    )
+    jarm_response_expires_in = jarm.DEFAULT_JARM_EXPIRES_IN
     refresh_token = True
     response_types = ['code']
 
@@ -274,24 +283,277 @@ class GrantTypeBase:
         """
         self._validate_response_mode(request)
 
-        token_items = token.items()
-
         if request.response_type == 'none':
             state = token.get('state', None)
-            token_items = [('state', state)] if state else []
+            response = {'state': state} if state else {}
+        else:
+            response = dict(token)
 
-        if request.response_mode == 'query':
+        response_mode = self._effective_response_mode(request)
+        if response_mode in jarm.JARM_RESPONSE_MODES:
+            jwt_response = self._prepare_jarm_response(request, response)
+            return self._format_jarm_response(
+                request, jwt_response, headers, body, status)
+
+        token_items = response.items()
+        if response_mode == 'query':
             headers['Location'] = add_params_to_uri(
                 request.redirect_uri, token_items, fragment=False)
             return headers, body, status
 
-        if request.response_mode == 'fragment':
+        if response_mode == 'fragment':
             headers['Location'] = add_params_to_uri(
                 request.redirect_uri, token_items, fragment=True)
             return headers, body, status
 
         raise NotImplementedError(
             'Subclasses must set a valid default_response_mode')
+
+    def _effective_response_mode(self, request):
+        """Resolve the ``jwt`` shortcut to a concrete JARM response mode."""
+        response_mode = request.response_mode
+        if response_mode == jarm.JWT:
+            return "{}.jwt".format(self.default_response_mode)
+        return response_mode
+
+    def _prepare_authorization_error_response(self, request, error,
+                                              default_fragment):
+        """Format an authorization error using the requested response mode."""
+        response_mode = self._effective_response_mode(request)
+        if response_mode in jarm.JARM_RESPONSE_MODES:
+            jwt_response = self._prepare_jarm_response(
+                request, dict(error.twotuples))
+            return self._format_jarm_response(
+                request, jwt_response, {}, None, 302)
+
+        # Preserve the historical fallback behavior for response modes a
+        # subclass supports as its default but does not implement here.
+        fragment = (response_mode != "query" if default_fragment
+                    else response_mode == "fragment")
+        redirect_uri = add_params_to_uri(
+            request.redirect_uri, error.twotuples, fragment=fragment)
+        return {'Location': redirect_uri}, None, 302
+
+    def _prepare_jarm_response(self, request, response):
+        """Return a signed JARM JWT for the authorization response."""
+        response = dict(response)
+
+        # A validator may take full control of signing the response.
+        for method_name in ('get_jarm_response', 'create_jarm_response'):
+            get_response = getattr(
+                self.request_validator, method_name, None)
+            if callable(get_response):
+                signed = get_response(dict(response), request)
+                if isinstance(signed, (str, bytes)):
+                    return self._as_jarm_jwt(signed)
+                if isinstance(signed, dict):
+                    response.update(signed)
+
+        finalize = getattr(
+            self.request_validator, 'finalize_jarm_response', None)
+        sign = getattr(self.request_validator, 'sign_jarm_response', None)
+
+        try:
+            issuer = self._get_jarm_issuer(request)
+        except jarm.JARMError as exc:
+            # Some validators finalize the complete response themselves and
+            # do not expose an issuer separately.
+            for hook in (finalize, sign):
+                if callable(hook):
+                    signed = hook(dict(response), request)
+                    if isinstance(signed, (str, bytes)):
+                        return self._as_jarm_jwt(signed)
+                    if isinstance(signed, dict):
+                        response.update(signed)
+            if not isinstance(response.get('iss'), str):
+                raise exc
+            issuer = response['iss']
+
+        claims = jarm.create_jarm_claims(
+            response,
+            issuer,
+            request.client_id,
+            expires_in=self._get_jarm_expires_in(request),
+        )
+
+        # Alternatively, a validator may only implement signing of claims.
+        if callable(finalize):
+            signed = finalize(dict(claims), request)
+            if isinstance(signed, (str, bytes)):
+                return self._as_jarm_jwt(signed)
+            if isinstance(signed, dict):
+                claims = signed
+
+        if callable(sign):
+            signed = sign(dict(claims), request)
+            if isinstance(signed, (str, bytes)):
+                return self._as_jarm_jwt(signed)
+            if isinstance(signed, dict):
+                claims = signed
+
+        key = self._get_jarm_signing_key(request)
+        if key is None:
+            raise NotImplementedError(
+                "A JARM response requires request_validator."
+                "get_jarm_response(), finalize_jarm_response(), "
+                "sign_jarm_response(), or get_jarm_signing_key().")
+
+        return jarm.sign_jarm_response(
+            claims,
+            key,
+            algorithm=self._get_jarm_signing_alg(request),
+            issuer=issuer,
+            audience=request.client_id,
+        )
+
+    @staticmethod
+    def _as_jarm_jwt(value):
+        return value.decode('utf-8') if isinstance(value, bytes) else value
+
+    def _format_jarm_response(self, request, jwt_response, headers, body, status):
+        """Place a signed JARM JWT according to the response mode."""
+        response_mode = self._effective_response_mode(request)
+        if response_mode == jarm.QUERY_JWT:
+            headers['Location'] = add_params_to_uri(
+                request.redirect_uri,
+                [('response', jwt_response)],
+                fragment=False,
+            )
+            return headers, body, status
+
+        if response_mode == jarm.FRAGMENT_JWT:
+            headers['Location'] = add_params_to_uri(
+                request.redirect_uri,
+                [('response', jwt_response)],
+                fragment=True,
+            )
+            return headers, body, status
+
+        if response_mode == jarm.FORM_POST_JWT:
+            headers.update({
+                'Content-Type': 'text/html;charset=UTF-8',
+                'Cache-Control': 'no-cache, no-store',
+                'Pragma': 'no-cache',
+            })
+            action = html.escape(request.redirect_uri or '', quote=True)
+            value = html.escape(jwt_response, quote=True)
+            html_body = (
+                '<html>\n'
+                '<head><title>Submit This Form</title></head>\n'
+                '<body onload="javascript:document.forms[0].submit()">\n'
+                '<form method="post" action="{}">\n'
+                '<input type="hidden" name="response" value="{}"/>\n'
+                '</form>\n'
+                '</body>\n'
+                '</html>'
+            ).format(action, value)
+            return headers, html_body, 200
+
+        raise NotImplementedError(
+            'Subclasses must set a valid default_response_mode')
+
+    def _get_jarm_expires_in(self, request):
+        expires_in = getattr(request, 'jarm_response_expires_in', None)
+        if expires_in is None:
+            expires_in = getattr(request, 'jarm_expires_in', None)
+        if expires_in is None:
+            expires_in = getattr(
+                self, 'jarm_expires_in', self.jarm_response_expires_in)
+        if callable(expires_in):
+            expires_in = expires_in(request)
+        return expires_in
+
+    def _get_jarm_issuer(self, request):
+        for value in (
+                getattr(self, 'jarm_issuer', None),
+                getattr(self, 'issuer', None),
+                getattr(request, 'jarm_issuer', None),
+                getattr(request, 'issuer', None)):
+            if isinstance(value, str) and value:
+                return value
+
+        for method_name in ('get_jarm_issuer', 'get_issuer'):
+            get_issuer = getattr(
+                self.request_validator, method_name, None)
+            if callable(get_issuer):
+                value = get_issuer(request)
+                if isinstance(value, str) and value:
+                    return value
+
+        for attr_name in ('issuer', 'jarm_issuer'):
+            value = getattr(self.request_validator, attr_name, None)
+            if isinstance(value, str) and value:
+                return value
+
+        raise jarm.JARMError(
+            "A JARM response requires an issuer. Set request.issuer, "
+            "grant jarm_issuer, or implement get_jarm_issuer().")
+
+    def _get_jarm_signing_key(self, request):
+        for value in (
+                getattr(self, 'jarm_signing_key', None),
+                getattr(self, 'jarm_key', None),
+                getattr(request, 'jarm_signing_key', None),
+                getattr(request, 'jarm_key', None)):
+            if self._is_jarm_signing_key(value):
+                return value
+
+        for method_name in ('get_jarm_signing_key', 'get_jarm_key'):
+            get_key = getattr(
+                self.request_validator, method_name, None)
+            if callable(get_key):
+                try:
+                    value = get_key(request.client_id, request)
+                except TypeError:
+                    value = get_key(request)
+                if self._is_jarm_signing_key(value):
+                    return value
+
+        for attr_name in ('jarm_signing_key', 'jarm_key'):
+            value = getattr(self.request_validator, attr_name, None)
+            if self._is_jarm_signing_key(value):
+                return value
+
+        return None
+
+    @staticmethod
+    def _is_jarm_signing_key(value):
+        if value is None:
+            return False
+        if isinstance(value, (str, bytes, dict)):
+            return True
+        module = type(value).__module__
+        return module.startswith(('cryptography.', 'jwt.'))
+
+    def _get_jarm_signing_alg(self, request):
+        for value in (
+                getattr(self, 'jarm_signing_alg', None),
+                getattr(self, 'jarm_algorithm', None),
+                getattr(request, 'jarm_signing_alg', None),
+                getattr(request, 'jarm_algorithm', None)):
+            if isinstance(value, str) and value:
+                return value
+
+        for method_name in (
+                'get_jarm_signing_alg',
+                'get_jarm_signing_algorithm',
+                'get_jarm_algorithm'):
+            get_alg = getattr(
+                self.request_validator, method_name, None)
+            if callable(get_alg):
+                try:
+                    value = get_alg(request.client_id, request)
+                except TypeError:
+                    value = get_alg(request)
+                if isinstance(value, str) and value:
+                    return value
+
+        for attr_name in ('jarm_signing_alg', 'jarm_algorithm'):
+            value = getattr(self.request_validator, attr_name, None)
+            if isinstance(value, str) and value:
+                return value
+
+        return 'RS256'
 
     def _validate_response_mode(self, request):
         """Reject unsupported response modes and apply the default one.

@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid28693",
+  "B": "/home/dev/feedback/uid28693",
+  "sha": "99dc2149bc51c5f320aca62f27492a2f9ef7ac3d",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "oauthlib",
+    "repo": "oauthlib",
+    "sha": "99dc2149bc51c5f320aca62f27492a2f9ef7ac3d"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "oauthlib",
+    "cloneUrl": "https://github.com/Rrr119/oauthlib.git"
+  },
+  "at": "2026-11-19T16:40:51.883Z"
+}

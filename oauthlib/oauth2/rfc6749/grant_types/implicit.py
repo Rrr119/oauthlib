@@ -232,8 +232,8 @@ class ImplicitGrant(GrantTypeBase):
             self._validate_response_mode(request)
             # Unlike the authorization code grant, fall back to the fragment
             # for response modes other than "query" and "fragment".
-            return {'Location': common.add_params_to_uri(request.redirect_uri, e.twotuples,
-                                                         fragment=request.response_mode != "query")}, None, 302
+            return self._prepare_authorization_error_response(
+                request, e, default_fragment=True)
 
         # In OIDC implicit flow it is possible to have a request_type that does not include the access_token!
         # "id_token token" - return the access token and the id token

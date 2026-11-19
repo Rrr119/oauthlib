@@ -4,6 +4,12 @@ Changelog
 Unreleased:
 ------------------
 OAuth2.0 Provider:
+* Added JWT Secured Authorization Response Mode (JARM) support with the
+  ``query.jwt``, ``fragment.jwt``, ``form_post.jwt`` and ``jwt`` response
+  modes. Responses are signed through ``RequestValidator`` JARM hooks or a
+  configured signing key and include the required ``iss``, ``aud`` and ``exp``
+  claims. JARM validation helpers and client parsing verify the signature and
+  those claims.
 * **Breaking**: #988: PKCE parameters are now validated against RFC 7636
   syntax. ``code_verifier`` must be 43-128 unreserved ASCII characters
   (``[A-Za-z0-9-._~]``) at the token endpoint (rejected with ``invalid_grant``)

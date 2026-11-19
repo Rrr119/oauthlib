@@ -8,6 +8,8 @@ for consuming and providing OAuth 2.0 RFC6749.
 """
 import warnings
 
+from .. import jarm
+from ..errors import MissingCodeError, raise_from_error
 from ..parameters import (
     parse_authorization_code_response, prepare_grant_uri,
     prepare_token_request,
@@ -173,7 +175,9 @@ class WebApplicationClient(Client):
         return prepare_token_request(self.grant_type, code=code, body=body,
                                      redirect_uri=redirect_uri, code_verifier=code_verifier, **kwargs)
 
-    def parse_request_uri_response(self, uri, state=None):
+    def parse_request_uri_response(self, uri, state=None, issuer=None,
+                                   audience=None, key=None, algorithms=None,
+                                   leeway=None, now=None):
         """Parse the URI query for code and state.
 
         If the resource owner grants the access request, the authorization
@@ -217,6 +221,28 @@ class WebApplicationClient(Client):
                     raise MismatchingStateError()
             oauthlib.oauth2.rfc6749.errors.MismatchingStateError
         """
-        response = parse_authorization_code_response(uri, state=state)
+        jarm_token = (
+            jarm.extract_jarm_response(uri)
+            if jarm.is_jarm_response(uri)
+            else None
+        )
+
+        if jarm_token is not None:
+            response = self.parse_jarm_response(
+                jarm_token,
+                issuer=issuer,
+                audience=audience,
+                key=key,
+                algorithms=algorithms,
+                leeway=leeway,
+                state=state,
+                now=now,
+            )
+            if 'error' in response:
+                raise_from_error(response.get('error'), response)
+            if 'code' not in response:
+                raise MissingCodeError("Missing code parameter in response.")
+        else:
+            response = parse_authorization_code_response(uri, state=state)
         self.populate_code_attributes(response)
         return response

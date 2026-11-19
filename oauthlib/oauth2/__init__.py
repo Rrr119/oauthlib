@@ -63,6 +63,12 @@ from .rfc6749.grant_types import (
     RefreshTokenGrant,
     ResourceOwnerPasswordCredentialsGrant,
 )
+from .rfc6749.jarm import (
+    DEFAULT_JARM_EXPIRES_IN, FRAGMENT_JWT, FORM_POST_JWT, JARMError,
+    JARM_RESPONSE_MODES, JARMValidationError, JWT, QUERY_JWT, create_jarm_claims,
+    extract_jarm_response, is_jarm_response, parse_jarm_response,
+    sign_jarm_response, validate_jarm_claims, validate_jarm_response,
+)
 from .rfc6749.request_validator import RequestValidator
 from .rfc6749.tokens import BearerToken, OAuth2Token
 from .rfc6749.utils import is_secure_transport

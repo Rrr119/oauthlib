@@ -12,9 +12,9 @@ import time
 import warnings
 
 from oauthlib.common import UNICODE_ASCII_CHARACTER_SET, generate_token
-from oauthlib.oauth2.rfc6749 import tokens
+from oauthlib.oauth2.rfc6749 import jarm, tokens
 from oauthlib.oauth2.rfc6749.errors import (
-    InsecureTransportError, TokenExpiredError,
+    InsecureTransportError, MismatchingStateError, TokenExpiredError,
 )
 from oauthlib.oauth2.rfc6749.parameters import (
     parse_expires,
@@ -114,6 +114,11 @@ class Client:
 
         :param code_challenge_method: PKCE parameter. A method that was used to derive code challenge.
         Defaults to "plain" if not present in the request.
+
+        :param issuer: Optional expected issuer for JARM responses.
+        :param jarm_key: Optional key used to verify JARM responses.
+        :param jarm_algorithms: Optional allowed JWS algorithms for JARM.
+        :param jarm_leeway: Optional clock skew for JARM claim checks.
         """
 
         self.client_id = client_id
@@ -131,6 +136,11 @@ class Client:
         self.code_verifier = code_verifier
         self.code_challenge = code_challenge
         self.code_challenge_method = code_challenge_method
+        jarm_issuer = kwargs.pop('jarm_issuer', None)
+        self.jarm_issuer = kwargs.pop('issuer', None) or jarm_issuer
+        self.jarm_key = kwargs.pop('jarm_key', None)
+        self.jarm_algorithms = kwargs.pop('jarm_algorithms', None)
+        self.jarm_leeway = kwargs.pop('jarm_leeway', 0)
         self.code = None
         self.expires_in = None
         self._expires_at = None
@@ -163,6 +173,44 @@ class Client:
     def parse_request_uri_response(self, *args, **kwargs):
         """Abstract method used to parse redirection responses."""
         raise NotImplementedError("Must be implemented by inheriting classes.")
+
+    def parse_jarm_response(self, response, issuer=None, audience=None, key=None,
+                            algorithms=None, leeway=None, state=None, now=None):
+        """Extract, verify and validate a JARM authorization response.
+
+        :param response: A JWT, redirect URI, form body, or mapping containing
+                         the ``response`` parameter.
+        :param issuer: Expected authorization server issuer.  Defaults to the
+                       issuer supplied to this client.
+        :param audience: Expected audience.  Defaults to ``client_id``.
+        :param key: Key used to verify the JWT signature.
+        :param algorithms: Allowed JWS algorithms.
+        :param leeway: Allowed clock skew in seconds.
+        :param state: Expected state value.  When supplied, a mismatch raises
+                      :class:`MismatchingStateError`.
+        :param now: Optional current time as a NumericDate.
+        :returns: The verified JARM claims.
+        """
+        issuer = issuer or self.jarm_issuer
+        if key is None:
+            key = self.jarm_key
+        if algorithms is None:
+            algorithms = self.jarm_algorithms
+        if leeway is None:
+            leeway = self.jarm_leeway
+
+        claims = jarm.parse_jarm_response(
+            response,
+            issuer=issuer,
+            audience=audience or self.client_id,
+            key=key,
+            algorithms=algorithms,
+            leeway=leeway,
+            now=now,
+        )
+        if state and claims.get('state') != state:
+            raise MismatchingStateError()
+        return claims
 
     def add_token(self, uri, http_method='GET', body=None, headers=None,
                   token_placement=None, **kwargs):

@@ -302,10 +302,8 @@ class AuthorizationCodeGrant(GrantTypeBase):
             request.redirect_uri = request.redirect_uri or self.error_uri
             # Unlike the implicit grant, fall back to the query for response
             # modes other than "query" and "fragment".
-            redirect_uri = common.add_params_to_uri(
-                request.redirect_uri, e.twotuples,
-                fragment=request.response_mode == "fragment")
-            return {'Location': redirect_uri}, None, 302
+            return self._prepare_authorization_error_response(
+                request, e, default_fragment=False)
 
         grant = self.create_authorization_code(request)
         for modifier in self._code_modifiers:
